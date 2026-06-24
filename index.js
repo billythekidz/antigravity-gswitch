@@ -7,6 +7,8 @@ const https = require('https');
 const http = require('http');
 const { exec } = require('child_process');
 
+let isCLI = false;
+
 const CONFIG_DIR = path.join(os.homedir(), '.gemini');
 const CLI_DIR = path.join(CONFIG_DIR, 'antigravity-cli');
 const PROFILES_DIR = path.join(CLI_DIR, 'profiles');
@@ -341,6 +343,10 @@ async function exchangeCodeAndSave(code, port) {
   }
 
   logDebug(`Successfully registered and activated profile for: ${email}`);
+  if (isCLI) {
+    console.log(`Successfully registered and activated profile for: ${email}`);
+    process.exit(0);
+  }
 }
 
 async function handleAddAccount() {
@@ -354,6 +360,10 @@ async function handleAddAccount() {
     const timeoutId = setTimeout(() => {
       logDebug('OAuth server timeout reached. Closing server.');
       server.close();
+      if (isCLI) {
+        console.error('Authentication timed out after 5 minutes.');
+        process.exit(1);
+      }
     }, 5 * 60 * 1000);
 
     server.on('request', async (req, res) => {
@@ -372,6 +382,10 @@ async function handleAddAccount() {
             await exchangeCodeAndSave(code, port);
           } catch (err) {
             logDebug('Error exchanging code: ' + err.message);
+            if (isCLI) {
+              console.error('Error exchanging code: ' + err.message);
+              process.exit(1);
+            }
           }
         } else {
           res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
@@ -379,6 +393,10 @@ async function handleAddAccount() {
           
           clearTimeout(timeoutId);
           server.close();
+          if (isCLI) {
+            console.error('Authentication failed: No authorization code found.');
+            process.exit(1);
+          }
         }
       }
     });
@@ -418,6 +436,10 @@ async function handleAddAccount() {
     server.on('error', (err) => {
       logDebug('Server error: ' + err.message);
       clearTimeout(timeoutId);
+      if (isCLI) {
+        console.error('Failed to start local redirect server: ' + err.message);
+        process.exit(1);
+      }
       resolve({
         isError: true,
         content: [{
@@ -519,18 +541,64 @@ function handleRemoveAccount(email) {
   };
 }
 
-// JSON-RPC stdio protocol loop
-let buffer = '';
-process.stdin.on('data', (chunk) => {
-  buffer += chunk.toString();
-  let lines = buffer.split('\n');
-  buffer = lines.pop(); // Keep incomplete line
-  for (let line of lines) {
-    if (line.trim()) {
-      handleMessage(line);
+// CLI / JSON-RPC switcher
+async function handleCommandLineArgs() {
+  const args = process.argv.slice(2);
+  const command = args[0];
+
+  try {
+    if (command === 'list') {
+      const res = await handleListAccounts();
+      console.log(res.content[0].text);
+      process.exit(0);
+    } else if (command === 'add') {
+      const res = await handleAddAccount();
+      console.log(res.content[0].text);
+    } else if (command === 'set') {
+      const email = args[1];
+      if (!email) {
+        console.error('Error: Email parameter is required. Usage: set <email>');
+        process.exit(1);
+      }
+      const res = await handleSwitchAccount(email);
+      console.log(res.content[0].text);
+      process.exit(res.isError ? 1 : 0);
+    } else if (command === 'remove') {
+      const email = args[1];
+      if (!email) {
+        console.error('Error: Email parameter is required. Usage: remove <email>');
+        process.exit(1);
+      }
+      const res = handleRemoveAccount(email);
+      console.log(res.content[0].text);
+      process.exit(res.isError ? 1 : 0);
+    } else {
+      console.log('Usage: node index.js [list | add | set <email> | remove <email>]');
+      process.exit(0);
     }
+  } catch (err) {
+    console.error('Error: ' + err.message);
+    process.exit(1);
   }
-});
+}
+
+if (process.argv.length > 2) {
+  isCLI = true;
+  handleCommandLineArgs();
+} else {
+  // JSON-RPC stdio protocol loop
+  let buffer = '';
+  process.stdin.on('data', (chunk) => {
+    buffer += chunk.toString();
+    let lines = buffer.split('\n');
+    buffer = lines.pop(); // Keep incomplete line
+    for (let line of lines) {
+      if (line.trim()) {
+        handleMessage(line);
+      }
+    }
+  });
+}
 
 async function handleMessage(line) {
   try {

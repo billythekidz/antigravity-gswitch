@@ -40,6 +40,16 @@ Verify that the plugin is listed and loaded:
 agy plugin list
 ```
 
+## Bootstrap Mode (For Fresh Sessions)
+
+If you are initializing a completely new machine/session and do not have any active Google credentials, you can use the plugin as a standalone CLI to bootstrap your login **before** starting `agy`:
+
+```bash
+node ~/.gemini/config/plugins/agy-accounts/index.js add
+```
+
+This will spin up the local redirect server, open your browser, and save the authenticated credentials as your active session and profile. Once completed, you can launch `agy` normally without any credential errors.
+
 ## Usage
 
 You can invoke the switching commands from within the `agy` interactive terminal session:
