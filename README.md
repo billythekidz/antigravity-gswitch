@@ -34,10 +34,19 @@ Install the plugin directly from GitHub:
 agy plugin install https://github.com/billythekidz/antigravity-gswitch
 ```
 
-Once installed, run the post-install script to configure the absolute paths in `mcp_config.json` inside the staged directory:
-```bash
-node ~/.gemini/config/plugins/antigravity-gswitch/install.js
-```
+Once installed, we need to configure the absolute path to `index.js` in `mcp_config.json`. You can choose either of these methods:
+
+- **Method A: Automated (Quick)**
+  Run the helper script to automatically resolve and write your local home directory path:
+  ```bash
+  node ~/.gemini/config/plugins/antigravity-gswitch/install.js
+  ```
+
+- **Method B: Manual (Secure/No-execution)**
+  If you prefer not to run arbitrary scripts:
+  1. Open `~/.gemini/config/plugins/antigravity-gswitch/mcp_config.json` in a text editor.
+  2. Replace `PLACEHOLDER_PATH` with the absolute path to your staged plugin folder (e.g., `/Users/<your-username>/.gemini/config/plugins/antigravity-gswitch`).
+  3. Save the file.
 
 Verify that the plugin is listed and loaded:
 ```bash
