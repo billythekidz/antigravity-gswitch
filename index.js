@@ -17,16 +17,16 @@ if (!fs.existsSync(PROFILES_DIR)) {
   fs.mkdirSync(PROFILES_DIR, { recursive: true });
 }
 
-// Logger helper for debugging (writes to ~/.gemini/antigravity-cli/gswitch-mcp.log)
+// Logger helper for debugging (writes to ~/.gemini/antigravity-cli/accounts-mcp.log)
 function logDebug(msg) {
   try {
-    fs.appendFileSync(path.join(CLI_DIR, 'gswitch-mcp.log'), `[${new Date().toISOString()}] ${msg}\n`);
+    fs.appendFileSync(path.join(CLI_DIR, 'accounts-mcp.log'), `[${new Date().toISOString()}] ${msg}\n`);
   } catch (e) {
     // Ignore
   }
 }
 
-logDebug('gswitch MCP server started');
+logDebug('accounts MCP server started');
 
 // Decode email from ID token (JWT)
 function getEmailFromIdToken(idToken) {
@@ -186,7 +186,7 @@ async function handleListAccounts() {
 
   let outputText = 'Saved profiles:\n';
   if (profiles.length === 0) {
-    outputText += '  (None - use gadd to save the active session)\n';
+    outputText += '  (None - use add to save the active session)\n';
   } else {
     for (const email of profiles) {
       const activeMarker = (email === activeEmail) ? '★ [ACTIVE]' : '  [INACTIVE]';
@@ -195,7 +195,7 @@ async function handleListAccounts() {
   }
   
   if (activeEmail && !profiles.includes(activeEmail)) {
-    outputText += `\nCurrent active account not saved in profiles:\n  ★ [ACTIVE] ${activeEmail} (run gadd to save)\n`;
+    outputText += `\nCurrent active account not saved in profiles:\n  ★ [ACTIVE] ${activeEmail} (run add to save)\n`;
   }
 
   return {
@@ -461,7 +461,7 @@ async function handleMessage(line) {
             tools: {}
           },
           serverInfo: {
-            name: 'antigravity-gswitch-mcp',
+            name: 'agy-accounts-mcp',
             version: '1.0.0'
           }
         }
@@ -474,17 +474,17 @@ async function handleMessage(line) {
         result: {
           tools: [
             {
-              name: 'glist',
+              name: 'list',
               description: 'List all registered Google accounts and indicate the active one.',
               inputSchema: { type: 'object', properties: {} }
             },
             {
-              name: 'gadd',
+              name: 'add',
               description: 'Add a new Google account profile. Phase 1 prepares the session for login. Phase 2 finalizes saving or restores the active session on cancel/failure.',
               inputSchema: { type: 'object', properties: {} }
             },
             {
-              name: 'gset',
+              name: 'set',
               description: 'Switch the active Google account to a saved profile by its email.',
               inputSchema: {
                 type: 'object',
@@ -495,7 +495,7 @@ async function handleMessage(line) {
               }
             },
             {
-              name: 'grm',
+              name: 'rm',
               description: 'Remove a saved account profile.',
               inputSchema: {
                 type: 'object',
@@ -515,13 +515,13 @@ async function handleMessage(line) {
       let result;
 
       try {
-        if (toolName === 'glist') {
+        if (toolName === 'list') {
           result = await handleListAccounts();
-        } else if (toolName === 'gadd') {
+        } else if (toolName === 'add') {
           result = await handleAddAccount();
-        } else if (toolName === 'gset') {
+        } else if (toolName === 'set') {
           result = await handleSwitchAccount(args.email);
-        } else if (toolName === 'grm') {
+        } else if (toolName === 'rm') {
           result = handleRemoveAccount(args.email);
         } else {
           result = { isError: true, content: [{ type: 'text', text: `Tool ${toolName} not found` }] };

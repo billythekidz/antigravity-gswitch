@@ -1,10 +1,10 @@
 {
   "mcpServers": {
-    "gswitch": {
+    "accounts": {
       "command": "node",
       "args": [
         "-e",
-        "const fs=require('fs'),path=require('path'),os=require('os'),{spawn}=require('child_process'); const p=path.join(os.homedir(), '.gemini', 'config', 'plugins', 'antigravity-gswitch'); if(!fs.existsSync(path.join(p, 'index.js'))){console.error('Plugin index.js not found');process.exit(1);} const child=spawn('node', [path.join(p, 'index.js')], {stdio:'inherit'}); child.on('exit', (code)=>process.exit(code));"
+        "const fs=require('fs'),path=require('path'),os=require('os'),{spawn}=require('child_process'); const p=path.join(os.homedir(), '.gemini', 'config', 'plugins', 'agy-accounts'); if(!fs.existsSync(path.join(p, 'index.js'))){console.error('Plugin index.js not found');process.exit(1);} const child=spawn('node', [path.join(p, 'index.js')], {stdio:'inherit'}); child.on('exit', (code)=>process.exit(code));"
       ],
       "env": {}
     }
