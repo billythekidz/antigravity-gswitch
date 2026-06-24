@@ -5,7 +5,7 @@ const path = require('path');
 const os = require('os');
 const https = require('https');
 const http = require('http');
-const { exec } = require('child_process');
+const { exec, spawn } = require('child_process');
 
 let isCLI = false;
 
@@ -349,106 +349,128 @@ async function exchangeCodeAndSave(code, port) {
   }
 }
 
+// ─── OAuth Daemon mode ────────────────────────────────────────────────────────
+// When called as: node index.js --oauth-daemon <resultFile>
+// Starts a standalone HTTP server for the OAuth callback, saves result to disk,
+// and exits. Runs completely detached from the MCP process.
+async function runOAuthDaemon(resultFile) {
+  const server = http.createServer();
+
+  const timeoutId = setTimeout(() => {
+    fs.writeFileSync(resultFile, JSON.stringify({ error: 'Authentication timed out after 5 minutes.' }));
+    server.close(() => process.exit(1));
+  }, 5 * 60 * 1000);
+
+  server.on('request', async (req, res) => {
+    const reqUrl = new URL(req.url, `http://${req.headers.host}`);
+    if (reqUrl.pathname !== '/') return;
+
+    const code = reqUrl.searchParams.get('code');
+    if (!code) {
+      res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end('<h1>Authentication failed</h1><p>No authorization code received.</p>');
+      clearTimeout(timeoutId);
+      fs.writeFileSync(resultFile, JSON.stringify({ error: 'No authorization code in callback.' }));
+      server.close(() => process.exit(1));
+      return;
+    }
+
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(`
+      <html><body style="font-family:sans-serif;text-align:center;padding:60px">
+        <h1 style="color:#1a73e8">&#10003; Signed in successfully!</h1>
+        <p>You can close this tab and return to the terminal.</p>
+      </body></html>
+    `);
+
+    const port = server.address().port;
+    clearTimeout(timeoutId);
+    server.close();
+
+    try {
+      await exchangeCodeAndSave(code, port);
+      fs.writeFileSync(resultFile, JSON.stringify({ ok: true }));
+      process.exit(0);
+    } catch (err) {
+      fs.writeFileSync(resultFile, JSON.stringify({ error: err.message }));
+      process.exit(1);
+    }
+  });
+
+  server.on('error', (err) => {
+    fs.writeFileSync(resultFile, JSON.stringify({ error: 'Server error: ' + err.message }));
+    process.exit(1);
+  });
+
+  server.listen(0, '127.0.0.1', () => {
+    const port = server.address().port;
+    // Write port to resultFile temporarily so parent can read it
+    fs.writeFileSync(resultFile, JSON.stringify({ port }));
+  });
+}
+
+// ─── Add account (MCP tool) ───────────────────────────────────────────────────
+// Spawns the OAuth daemon as a detached process that outlives the MCP session.
 async function handleAddAccount() {
   await autoSaveCurrentSession();
 
-  return new Promise((resolve) => {
-    logDebug('handleAddAccount: Starting local OAuth redirect server...');
-    const server = http.createServer();
-    
-    // Set a timeout to close the server if authentication takes too long (5 minutes)
-    const timeoutId = setTimeout(() => {
-      logDebug('OAuth server timeout reached. Closing server.');
-      server.close();
-      if (isCLI) {
-        console.error('Authentication timed out after 5 minutes.');
-        process.exit(1);
-      }
-    }, 5 * 60 * 1000);
+  const resultFile = path.join(CLI_DIR, 'oauth-pending.json');
+  // Remove stale result file
+  if (fs.existsSync(resultFile)) fs.unlinkSync(resultFile);
 
-    server.on('request', async (req, res) => {
-      const reqUrl = new URL(req.url, `http://${req.headers.host}`);
-      if (reqUrl.pathname === '/') {
-        const code = reqUrl.searchParams.get('code');
-        if (code) {
-          res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-          res.end('<h1>Authentication successful!</h1><p>You can close this tab and return to the terminal/IDE.</p>');
-          
-          const port = server.address().port;
-          clearTimeout(timeoutId);
-          server.close();
-          
-          try {
-            await exchangeCodeAndSave(code, port);
-          } catch (err) {
-            logDebug('Error exchanging code: ' + err.message);
-            if (isCLI) {
-              console.error('Error exchanging code: ' + err.message);
-              process.exit(1);
-            }
-          }
-        } else {
-          res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
-          res.end('<h1>Authentication failed</h1><p>No authorization code found in request.</p>');
-          
-          clearTimeout(timeoutId);
-          server.close();
-          if (isCLI) {
-            console.error('Authentication failed: No authorization code found.');
-            process.exit(1);
-          }
-        }
-      }
-    });
-
-    server.listen(0, '127.0.0.1', () => {
-      const port = server.address().port;
-      logDebug(`OAuth redirect server listening on port ${port}`);
-
-      const scopes = [
-        'https://www.googleapis.com/auth/userinfo.profile',
-        'https://www.googleapis.com/auth/userinfo.email',
-        'openid',
-        'https://www.googleapis.com/auth/cloud-platform'
-      ].join(' ');
-
-      const authUrl = 'https://accounts.google.com/o/oauth2/v2/auth?' + new URLSearchParams({
-        client_id: CLIENT_ID,
-        redirect_uri: `http://localhost:${port}`,
-        response_type: 'code',
-        scope: scopes,
-        prompt: 'select_account'
-      }).toString();
-
-      openBrowser(authUrl);
-
-      resolve({
-        content: [{
-          type: 'text',
-          text: `Please authenticate in your browser.\n\n` +
-                `If it did not open automatically, click the link below:\n` +
-                `[Google Authentication Link](${authUrl})\n\n` +
-                `The local server is waiting on http://localhost:${port} for the callback.`
-        }]
-      });
-    });
-
-    server.on('error', (err) => {
-      logDebug('Server error: ' + err.message);
-      clearTimeout(timeoutId);
-      if (isCLI) {
-        console.error('Failed to start local redirect server: ' + err.message);
-        process.exit(1);
-      }
-      resolve({
-        isError: true,
-        content: [{
-          type: 'text',
-          text: 'Failed to start local redirect server: ' + err.message
-        }]
-      });
-    });
+  // Spawn daemon: detached + unref so it survives MCP process death
+  const daemon = spawn(process.execPath, [__filename, '--oauth-daemon', resultFile], {
+    detached: true,
+    stdio: 'ignore'
   });
+  daemon.unref();
+
+  // Wait up to 3s for the daemon to write the port
+  const port = await new Promise((resolve, reject) => {
+    const deadline = Date.now() + 3000;
+    const poll = () => {
+      if (fs.existsSync(resultFile)) {
+        try {
+          const data = JSON.parse(fs.readFileSync(resultFile, 'utf8'));
+          if (data.port) return resolve(data.port);
+          if (data.error) return reject(new Error(data.error));
+        } catch (_) {}
+      }
+      if (Date.now() > deadline) return reject(new Error('Daemon did not start in time.'));
+      setTimeout(poll, 100);
+    };
+    poll();
+  });
+
+  logDebug(`OAuth daemon started, listening on port ${port}`);
+
+  const scopes = [
+    'https://www.googleapis.com/auth/userinfo.profile',
+    'https://www.googleapis.com/auth/userinfo.email',
+    'openid',
+    'https://www.googleapis.com/auth/cloud-platform'
+  ].join(' ');
+
+  const authUrl = 'https://accounts.google.com/o/oauth2/v2/auth?' + new URLSearchParams({
+    client_id: CLIENT_ID,
+    redirect_uri: `http://localhost:${port}`,
+    response_type: 'code',
+    scope: scopes,
+    prompt: 'select_account'
+  }).toString();
+
+  openBrowser(authUrl);
+
+  return {
+    content: [{
+      type: 'text',
+      text:
+        `A Google Sign-in page should have opened in your browser automatically. If not, click the link below:\n\n` +
+        `👉 **[Sign in with Google](${authUrl})**\n\n` +
+        `Complete the sign-in flow in your browser — the new account will be automatically saved and activated once done. ` +
+        `Let me know when you\'re finished!`
+    }]
+  };
 }
 
 async function handleSwitchAccount(email) {
@@ -582,7 +604,15 @@ async function handleCommandLineArgs() {
   }
 }
 
-if (process.argv.length > 2) {
+if (process.argv[2] === '--oauth-daemon') {
+  // Detached daemon mode: handle OAuth callback independently of MCP
+  const resultFile = process.argv[3];
+  if (!resultFile) { console.error('Missing result file argument'); process.exit(1); }
+  runOAuthDaemon(resultFile).catch((err) => {
+    try { fs.writeFileSync(resultFile, JSON.stringify({ error: err.message })); } catch (_) {}
+    process.exit(1);
+  });
+} else if (process.argv.length > 2) {
   isCLI = true;
   handleCommandLineArgs();
 } else {
