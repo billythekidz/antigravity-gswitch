@@ -10,6 +10,7 @@ A public plugin for the **Google Antigravity CLI (`agy`)** designed to manage mu
   - **Phase 1 (Preparation)**: Backs up the current session, clearing active tokens so that subsequent CLI commands prompt the browser Google login flow.
   - **Phase 2 (Completion / Auto-Restore)**: Resolves and saves the newly registered account. If login is cancelled or fails (no new token found), it **automatically restores the previous active session** to prevent lockouts.
 - **Fast Switch**: Swaps out active CLI tokens (`antigravity-oauth-token`), active credentials (`oauth_creds.json`), and system account configurations (`google_accounts.json`) instantly.
+- **Zero Configuration**: Dynamically resolves home directory paths on startup. Works immediately after installation on macOS, Windows, and Linux without any manual settings or post-install scripts.
 - **Zero Dependencies**: Pure Vanilla Node.js implementation for maximum security, compatibility, and startup performance.
 
 ## Files Structure
@@ -19,7 +20,6 @@ antigravity-gswitch/
 ├── plugin.json          # Antigravity CLI plugin manifest
 ├── mcp_config.json      # Model Context Protocol configuration
 ├── index.js             # Stdio-based JSON-RPC MCP server
-├── install.js           # Post-install script for absolute path resolution
 ├── README.md
 ├── LICENSE
 └── skills/
@@ -33,20 +33,6 @@ Install the plugin directly from GitHub:
 ```bash
 agy plugin install https://github.com/billythekidz/antigravity-gswitch
 ```
-
-Once installed, we need to configure the absolute path to `index.js` in `mcp_config.json`. You can choose either of these methods:
-
-- **Method A: Automated (Quick)**
-  Run the helper script to automatically resolve and write your local home directory path:
-  ```bash
-  node ~/.gemini/config/plugins/antigravity-gswitch/install.js
-  ```
-
-- **Method B: Manual (Secure/No-execution)**
-  If you prefer not to run arbitrary scripts:
-  1. Open `~/.gemini/config/plugins/antigravity-gswitch/mcp_config.json` in a text editor.
-  2. Replace `PLACEHOLDER_PATH` with the absolute path to your staged plugin folder (e.g., `/Users/<your-username>/.gemini/config/plugins/antigravity-gswitch`).
-  3. Save the file.
 
 Verify that the plugin is listed and loaded:
 ```bash
