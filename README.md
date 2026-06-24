@@ -6,9 +6,10 @@ A public plugin for the **Google Antigravity CLI (`agy`)** designed to manage mu
 
 - **Multi-Profile Storage**: Save tokens for multiple Google accounts locally.
 - **Auto-Save Token Refreshes**: Before switching accounts, the plugin updates the saved credentials for the current account to preserve refreshed access tokens.
-- **Stateful Add Account (`add`)**:
-  - **Phase 1 (Preparation)**: Backs up the current session, clearing active tokens so that subsequent CLI commands prompt the browser Google login flow.
-  - **Phase 2 (Completion / Auto-Restore)**: Resolves and saves the newly registered account. If login is cancelled or fails (no new token found), it **automatically restores the previous active session** to prevent lockouts.
+- **One-Click Add Account (`add`)**:
+  - Automatically backs up your current active session first.
+  - Starts a temporary local redirect server and opens the browser Google Sign-in page.
+  - Automatically captures the redirected credentials, resolves the email, and saves/activates the new profile.
 - **Fast Switch**: Swaps out active CLI tokens (`antigravity-oauth-token`), active credentials (`oauth_creds.json`), and system account configurations (`google_accounts.json`) instantly.
 - **Zero Configuration**: Dynamically resolves home directory paths on startup. Works immediately after installation on macOS, Windows, and Linux without any manual settings or post-install scripts.
 - **Zero Dependencies**: Pure Vanilla Node.js implementation for maximum security, compatibility, and startup performance.
@@ -43,21 +44,16 @@ agy plugin list
 
 You can invoke the switching commands from within the `agy` interactive terminal session:
 
-### 1. Stateful Add Account
-To add a new account:
-1. Run:
-   ```
-   add
-   ```
-   *(This backs up your active session and prepares for a new login).*
-2. Submit a new CLI prompt or start a new session. Since active credentials are cleared, `agy` will prompt the browser Google login flow. Complete it.
-3. Once logged in, run the tool again:
-   ```
-   add
-   ```
-   *(This saves the new token to a profile named after the email).*
-   
-*Note: If you cancel the sign-in or it fails, calling `add` again without completing the login will automatically restore your previous session.*
+### 1. Add Account
+To add a new account, simply run:
+```
+add
+```
+This will:
+1. Auto-save your current active session to its profile folder.
+2. Spin up a temporary local redirect server.
+3. Open your web browser to Google's authentication page.
+4. Once you complete the login, the local server will receive the callback, exchange the code for credentials, and save/activate the new profile automatically.
 
 ### 2. List Accounts
 Show all saved accounts and see which one is active:

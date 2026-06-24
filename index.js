@@ -4,6 +4,8 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const https = require('https');
+const http = require('http');
+const { exec } = require('child_process');
 
 const CONFIG_DIR = path.join(os.homedir(), '.gemini');
 const CLI_DIR = path.join(CONFIG_DIR, 'antigravity-cli');
@@ -158,6 +160,29 @@ async function resolveEmail(tokenData, credsData) {
   return null;
 }
 
+async function autoSaveCurrentSession() {
+  if (fs.existsSync(TOKEN_FILE)) {
+    try {
+      const activeToken = JSON.parse(fs.readFileSync(TOKEN_FILE, 'utf8'));
+      const activeCreds = fs.existsSync(CREDS_FILE) ? JSON.parse(fs.readFileSync(CREDS_FILE, 'utf8')) : null;
+      const activeEmail = await resolveEmail(activeToken, activeCreds);
+      if (activeEmail) {
+        const activeProfileDir = path.join(PROFILES_DIR, activeEmail);
+        if (!fs.existsSync(activeProfileDir)) {
+          fs.mkdirSync(activeProfileDir, { recursive: true });
+        }
+        fs.writeFileSync(path.join(activeProfileDir, 'antigravity-oauth-token'), JSON.stringify(activeToken, null, 2));
+        if (activeCreds) {
+          fs.writeFileSync(path.join(activeProfileDir, 'oauth_creds.json'), JSON.stringify(activeCreds, null, 2));
+        }
+        logDebug(`Auto-saved current active profile for ${activeEmail}`);
+      }
+    } catch (e) {
+      logDebug('Failed to auto-save active profile: ' + e.message);
+    }
+  }
+}
+
 async function handleListAccounts() {
   logDebug('Listing accounts...');
   // Find current active email
@@ -206,124 +231,202 @@ async function handleListAccounts() {
   };
 }
 
-async function handleAddAccount() {
-  const tokenBackup = TOKEN_FILE + '.backup';
-  const credsBackup = CREDS_FILE + '.backup';
-
-  const backupExists = fs.existsSync(tokenBackup) || fs.existsSync(credsBackup);
-
-  if (!backupExists) {
-    // PHASE 1: Start login preparation
-    logDebug('handleAddAccount: Phase 1 (Prepare login)');
-    
-    // 1. Auto-save current active session if it exists
-    if (fs.existsSync(TOKEN_FILE)) {
-      try {
-        const activeToken = JSON.parse(fs.readFileSync(TOKEN_FILE, 'utf8'));
-        const activeCreds = fs.existsSync(CREDS_FILE) ? JSON.parse(fs.readFileSync(CREDS_FILE, 'utf8')) : null;
-        const activeEmail = await resolveEmail(activeToken, activeCreds);
-        if (activeEmail) {
-          const activeProfileDir = path.join(PROFILES_DIR, activeEmail);
-          if (!fs.existsSync(activeProfileDir)) {
-            fs.mkdirSync(activeProfileDir, { recursive: true });
-          }
-          fs.writeFileSync(path.join(activeProfileDir, 'antigravity-oauth-token'), JSON.stringify(activeToken, null, 2));
-          if (activeCreds) {
-            fs.writeFileSync(path.join(activeProfileDir, 'oauth_creds.json'), JSON.stringify(activeCreds, null, 2));
-          }
-          logDebug(`Phase 1: Auto-saved current active profile to ${activeEmail}`);
-        }
-      } catch (e) {
-        logDebug('Phase 1: Failed to auto-save current profile: ' + e.message);
-      }
-    }
-
-    // 2. Backup and clear active session files
-    if (fs.existsSync(TOKEN_FILE)) {
-      fs.renameSync(TOKEN_FILE, tokenBackup);
-    }
-    if (fs.existsSync(CREDS_FILE)) {
-      fs.renameSync(CREDS_FILE, credsBackup);
-    }
-
-    let text = 'Successfully prepared for new account registration.\n\n';
-    text += '1. Please run `agy` or submit a new query to complete the Google Sign-in flow on your browser.\n';
-    text += '2. Once logged in, run this tool again (or ask me to complete) to save the new profile.\n\n';
-    text += 'NOTE: If you want to cancel, run this tool again without logging in, and I will restore your previous session.';
-
-    return {
-      content: [{
-        type: 'text',
-        text: text
-      }]
-    };
+function openBrowser(url) {
+  const platform = os.platform();
+  if (platform === 'darwin') {
+    exec(`open "${url}"`);
+  } else if (platform === 'win32') {
+    exec(`start "" "${url}"`);
   } else {
-    // PHASE 2: Complete login or cancel/restore
-    logDebug('handleAddAccount: Phase 2 (Complete or Restore)');
+    exec(`xdg-open "${url}"`);
+  }
+}
 
-    if (fs.existsSync(TOKEN_FILE)) {
-      // New token found - try to save profile
-      try {
-        const tokenData = JSON.parse(fs.readFileSync(TOKEN_FILE, 'utf8'));
-        const credsData = fs.existsSync(CREDS_FILE) ? JSON.parse(fs.readFileSync(CREDS_FILE, 'utf8')) : null;
-        const email = await resolveEmail(tokenData, credsData);
-        if (email) {
-          const profileDir = path.join(PROFILES_DIR, email);
-          if (!fs.existsSync(profileDir)) {
-            fs.mkdirSync(profileDir, { recursive: true });
+function exchangeCodeForToken(code, port) {
+  return new Promise((resolve, reject) => {
+    const postData = new URLSearchParams({
+      client_id: CLIENT_ID,
+      code: code,
+      grant_type: 'authorization_code',
+      redirect_uri: `http://localhost:${port}`
+    }).toString();
+
+    const options = {
+      hostname: 'oauth2.googleapis.com',
+      path: '/token',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Content-Length': Buffer.byteLength(postData)
+      }
+    };
+
+    const req = https.request(options, (res) => {
+      let body = '';
+      res.on('data', (chunk) => body += chunk);
+      res.on('end', () => {
+        if (res.statusCode === 200) {
+          try {
+            resolve(JSON.parse(body));
+          } catch (e) {
+            reject(new Error('Failed to parse token response'));
           }
-          fs.writeFileSync(path.join(profileDir, 'antigravity-oauth-token'), JSON.stringify(tokenData, null, 2));
-          if (credsData) {
-            fs.writeFileSync(path.join(profileDir, 'oauth_creds.json'), JSON.stringify(credsData, null, 2));
-          }
-
-          // Clean up backups
-          if (fs.existsSync(tokenBackup)) fs.unlinkSync(tokenBackup);
-          if (fs.existsSync(credsBackup)) fs.unlinkSync(credsBackup);
-
-          logDebug(`Phase 2: Saved new profile for ${email}`);
-          return {
-            content: [{
-              type: 'text',
-              text: `Successfully added new profile for account: ${email}`
-            }]
-          };
         } else {
-          return {
-            isError: true,
-            content: [{
-              type: 'text',
-              text: 'Could not resolve email from the new token. Please ensure login completed successfully.'
-            }]
-          };
+          reject(new Error(`Token exchange returned status ${res.statusCode}: ${body}`));
         }
-      } catch (e) {
-        return {
-          isError: true,
-          content: [{
-            type: 'text',
-            text: 'Error processing new token: ' + e.message
-          }]
-        };
-      }
-    } else {
-      // No new token found - Restore previous session (Cancel)
-      logDebug('Phase 2: No new token found. Restoring backups.');
-      if (fs.existsSync(tokenBackup)) {
-        fs.renameSync(tokenBackup, TOKEN_FILE);
-      }
-      if (fs.existsSync(credsBackup)) {
-        fs.renameSync(credsBackup, CREDS_FILE);
-      }
+      });
+    });
 
-      return {
+    req.on('error', (err) => reject(err));
+    req.write(postData);
+    req.end();
+  });
+}
+
+async function exchangeCodeAndSave(code, port) {
+  logDebug('Exchanging authorization code...');
+  const tokenData = await exchangeCodeForToken(code, port);
+  logDebug('Code exchanged successfully.');
+  
+  const expiresIn = tokenData.expires_in || 3600;
+  const activeToken = {
+    token: {
+      access_token: tokenData.access_token,
+      token_type: tokenData.token_type,
+      refresh_token: tokenData.refresh_token,
+      expiry: new Date(Date.now() + expiresIn * 1000).toISOString()
+    },
+    auth_method: 'consumer'
+  };
+
+  const activeCreds = {
+    access_token: tokenData.access_token,
+    scope: tokenData.scope || 'https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/userinfo.email openid https://www.googleapis.com/auth/cloud-platform',
+    token_type: tokenData.token_type,
+    id_token: tokenData.id_token,
+    expiry_date: Date.now() + expiresIn * 1000,
+    refresh_token: tokenData.refresh_token
+  };
+
+  const email = await resolveEmail(activeToken, activeCreds);
+  if (!email) {
+    throw new Error('Could not resolve email from new token.');
+  }
+
+  const profileDir = path.join(PROFILES_DIR, email);
+  if (!fs.existsSync(profileDir)) {
+    fs.mkdirSync(profileDir, { recursive: true });
+  }
+
+  fs.writeFileSync(path.join(profileDir, 'antigravity-oauth-token'), JSON.stringify(activeToken, null, 2));
+  fs.writeFileSync(path.join(profileDir, 'oauth_creds.json'), JSON.stringify(activeCreds, null, 2));
+
+  fs.writeFileSync(TOKEN_FILE, JSON.stringify(activeToken, null, 2));
+  fs.writeFileSync(CREDS_FILE, JSON.stringify(activeCreds, null, 2));
+
+  if (fs.existsSync(ACCOUNTS_FILE)) {
+    try {
+      const accounts = JSON.parse(fs.readFileSync(ACCOUNTS_FILE, 'utf8'));
+      accounts.active = email;
+      if (!accounts.old) accounts.old = [];
+      if (!accounts.old.includes(email)) {
+        accounts.old.push(email);
+      }
+      fs.writeFileSync(ACCOUNTS_FILE, JSON.stringify(accounts, null, 2));
+    } catch (e) {
+      logDebug('Failed to update google_accounts.json: ' + e.message);
+    }
+  } else {
+    fs.writeFileSync(ACCOUNTS_FILE, JSON.stringify({ active: email, old: [email] }, null, 2));
+  }
+
+  logDebug(`Successfully registered and activated profile for: ${email}`);
+}
+
+async function handleAddAccount() {
+  await autoSaveCurrentSession();
+
+  return new Promise((resolve) => {
+    logDebug('handleAddAccount: Starting local OAuth redirect server...');
+    const server = http.createServer();
+    
+    // Set a timeout to close the server if authentication takes too long (5 minutes)
+    const timeoutId = setTimeout(() => {
+      logDebug('OAuth server timeout reached. Closing server.');
+      server.close();
+    }, 5 * 60 * 1000);
+
+    server.on('request', async (req, res) => {
+      const reqUrl = new URL(req.url, `http://${req.headers.host}`);
+      if (reqUrl.pathname === '/') {
+        const code = reqUrl.searchParams.get('code');
+        if (code) {
+          res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+          res.end('<h1>Authentication successful!</h1><p>You can close this tab and return to the terminal/IDE.</p>');
+          
+          const port = server.address().port;
+          clearTimeout(timeoutId);
+          server.close();
+          
+          try {
+            await exchangeCodeAndSave(code, port);
+          } catch (err) {
+            logDebug('Error exchanging code: ' + err.message);
+          }
+        } else {
+          res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
+          res.end('<h1>Authentication failed</h1><p>No authorization code found in request.</p>');
+          
+          clearTimeout(timeoutId);
+          server.close();
+        }
+      }
+    });
+
+    server.listen(0, '127.0.0.1', () => {
+      const port = server.address().port;
+      logDebug(`OAuth redirect server listening on port ${port}`);
+
+      const scopes = [
+        'https://www.googleapis.com/auth/userinfo.profile',
+        'https://www.googleapis.com/auth/userinfo.email',
+        'openid',
+        'https://www.googleapis.com/auth/cloud-platform'
+      ].join(' ');
+
+      const authUrl = 'https://accounts.google.com/o/oauth2/v2/auth?' + new URLSearchParams({
+        client_id: CLIENT_ID,
+        redirect_uri: `http://localhost:${port}`,
+        response_type: 'code',
+        scope: scopes,
+        prompt: 'select_account'
+      }).toString();
+
+      openBrowser(authUrl);
+
+      resolve({
         content: [{
           type: 'text',
-          text: 'No new login detected. Restored the previous active session.'
+          text: `Please authenticate in your browser.\n\n` +
+                `If it did not open automatically, click the link below:\n` +
+                `[Google Authentication Link](${authUrl})\n\n` +
+                `The local server is waiting on http://localhost:${port} for the callback.`
         }]
-      };
-    }
-  }
+      });
+    });
+
+    server.on('error', (err) => {
+      logDebug('Server error: ' + err.message);
+      clearTimeout(timeoutId);
+      resolve({
+        isError: true,
+        content: [{
+          type: 'text',
+          text: 'Failed to start local redirect server: ' + err.message
+        }]
+      });
+    });
+  });
 }
 
 async function handleSwitchAccount(email) {
@@ -338,26 +441,7 @@ async function handleSwitchAccount(email) {
   }
 
   // 1. Save current active token to its profile folder first to avoid losing refreshed tokens
-  if (fs.existsSync(TOKEN_FILE)) {
-    try {
-      const activeToken = JSON.parse(fs.readFileSync(TOKEN_FILE, 'utf8'));
-      const activeCreds = fs.existsSync(CREDS_FILE) ? JSON.parse(fs.readFileSync(CREDS_FILE, 'utf8')) : null;
-      const activeEmail = await resolveEmail(activeToken, activeCreds);
-      if (activeEmail) {
-        const activeProfileDir = path.join(PROFILES_DIR, activeEmail);
-        if (!fs.existsSync(activeProfileDir)) {
-          fs.mkdirSync(activeProfileDir, { recursive: true });
-        }
-        fs.writeFileSync(path.join(activeProfileDir, 'antigravity-oauth-token'), JSON.stringify(activeToken, null, 2));
-        if (activeCreds) {
-          fs.writeFileSync(path.join(activeProfileDir, 'oauth_creds.json'), JSON.stringify(activeCreds, null, 2));
-        }
-        logDebug(`Auto-saved current active profile for ${activeEmail}`);
-      }
-    } catch (e) {
-      logDebug('Failed to auto-save active profile: ' + e.message);
-    }
-  }
+  await autoSaveCurrentSession();
 
   // Delete any lingering backups to avoid restoring stale sessions
   if (fs.existsSync(TOKEN_FILE + '.backup')) {
@@ -480,7 +564,7 @@ async function handleMessage(line) {
             },
             {
               name: 'add',
-              description: 'Add a new Google account profile. Phase 1 prepares the session for login. Phase 2 finalizes saving or restores the active session on cancel/failure.',
+              description: 'Add a new Google account profile by opening the Google login page in your browser and automatically saving the authenticated profile.',
               inputSchema: { type: 'object', properties: {} }
             },
             {

@@ -14,9 +14,7 @@ This skill allows the Antigravity Agent and the user to manage multiple Google a
    - **When to use**: Use this to check the list of available profiles and verify the currently active account.
 
 2. **`add`**
-   - **Description**: A stateful, 2-phase tool to register a new account:
-     - **Phase 1 (Preparation)**: Automatically backs up the current session files and clears active tokens. Subsequent CLI calls or queries will prompt the browser Google OAuth sign-in flow.
-     - **Phase 2 (Confirmation / Auto-Restore)**: Scans for the newly created active token, resolves its email, and saves it as a profile. If no new login is detected (e.g. login failed or cancelled), it **automatically restores** the previous active session to prevent lockout.
+   - **Description**: Starts a temporary local redirect server and opens the browser Google Sign-in page. The plugin automatically saves and activates the authenticated profile in one go.
    - **When to use**: Run this when you want to add a new Google account to the switcher.
 
 3. **`set`**
@@ -32,8 +30,7 @@ This skill allows the Antigravity Agent and the user to manage multiple Google a
 
 ## Account Addition Workflow
 
-To add a new Google account, follow these steps:
-1. Run `add` once. The tool will auto-save your current active account and clear active tokens.
-2. Submit a new prompt or run `agy` in your terminal to trigger the Google Sign-In browser flow. Complete the authentication.
-3. Run `add` a second time to detect and save the new account as a profile.
-*(If you cancel or fail the browser login, running `add` at step 3 will automatically restore your original active session).*
+To add a new Google account:
+1. Run the `add` tool.
+2. Complete the Google Sign-in flow in the browser window that opens automatically (or click the returned link).
+3. The background redirect server will automatically receive the callback, save the new profile, and set it as active.
