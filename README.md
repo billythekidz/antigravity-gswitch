@@ -6,7 +6,7 @@ A public plugin for the **Google Antigravity CLI (`agy`)** designed to manage mu
 
 - **Multi-Profile Storage**: Save tokens for multiple Google accounts locally.
 - **Auto-Save Token Refreshes**: Before switching accounts, the plugin updates the saved credentials for the current account to preserve refreshed access tokens.
-- **Stateful Add Account (`gswitch_add_account`)**:
+- **Stateful Add Account (`gadd`)**:
   - **Phase 1 (Preparation)**: Backs up the current session, clearing active tokens so that subsequent CLI commands prompt the browser Google login flow.
   - **Phase 2 (Completion / Auto-Restore)**: Resolves and saves the newly registered account. If login is cancelled or fails (no new token found), it **automatically restores the previous active session** to prevent lockouts.
 - **Fast Switch**: Swaps out active CLI tokens (`antigravity-oauth-token`), active credentials (`oauth_creds.json`), and system account configurations (`google_accounts.json`) instantly.
@@ -47,28 +47,34 @@ You can invoke the switching commands from within the `agy` interactive terminal
 To add a new account:
 1. Run:
    ```
-   gswitch_add_account
+   gadd
    ```
    *(This backs up your active session and prepares for a new login).*
 2. Submit a new CLI prompt or start a new session. Since active credentials are cleared, `agy` will prompt the browser Google login flow. Complete it.
 3. Once logged in, run the tool again:
    ```
-   gswitch_add_account
+   gadd
    ```
    *(This saves the new token to a profile named after the email).*
    
-*Note: If you cancel the sign-in or it fails, calling `gswitch_add_account` again without completing the login will automatically restore your previous session.*
+*Note: If you cancel the sign-in or it fails, calling `gadd` again without completing the login will automatically restore your previous session.*
 
 ### 2. List Accounts
 Show all saved accounts and see which one is active:
 ```
-gswitch_list_accounts
+glist
 ```
 
 ### 3. Switch Account
 Switch to another saved email:
 ```
-gswitch_switch_account email="user2@gmail.com"
+gset email="user2@gmail.com"
+```
+
+### 4. Remove Account
+Remove a saved email profile:
+```
+grm email="user2@gmail.com"
 ```
 
 ## License

@@ -186,7 +186,7 @@ async function handleListAccounts() {
 
   let outputText = 'Saved profiles:\n';
   if (profiles.length === 0) {
-    outputText += '  (None - use gswitch_add_account to save the active session)\n';
+    outputText += '  (None - use gadd to save the active session)\n';
   } else {
     for (const email of profiles) {
       const activeMarker = (email === activeEmail) ? '★ [ACTIVE]' : '  [INACTIVE]';
@@ -195,7 +195,7 @@ async function handleListAccounts() {
   }
   
   if (activeEmail && !profiles.includes(activeEmail)) {
-    outputText += `\nCurrent active account not saved in profiles:\n  ★ [ACTIVE] ${activeEmail} (run gswitch_add_account to save)\n`;
+    outputText += `\nCurrent active account not saved in profiles:\n  ★ [ACTIVE] ${activeEmail} (run gadd to save)\n`;
   }
 
   return {
@@ -474,17 +474,17 @@ async function handleMessage(line) {
         result: {
           tools: [
             {
-              name: 'gswitch_list_accounts',
+              name: 'glist',
               description: 'List all registered Google accounts and indicate the active one.',
               inputSchema: { type: 'object', properties: {} }
             },
             {
-              name: 'gswitch_add_account',
+              name: 'gadd',
               description: 'Add a new Google account profile. Phase 1 prepares the session for login. Phase 2 finalizes saving or restores the active session on cancel/failure.',
               inputSchema: { type: 'object', properties: {} }
             },
             {
-              name: 'gswitch_switch_account',
+              name: 'gset',
               description: 'Switch the active Google account to a saved profile by its email.',
               inputSchema: {
                 type: 'object',
@@ -495,7 +495,7 @@ async function handleMessage(line) {
               }
             },
             {
-              name: 'gswitch_remove_account',
+              name: 'grm',
               description: 'Remove a saved account profile.',
               inputSchema: {
                 type: 'object',
@@ -515,13 +515,13 @@ async function handleMessage(line) {
       let result;
 
       try {
-        if (toolName === 'gswitch_list_accounts') {
+        if (toolName === 'glist') {
           result = await handleListAccounts();
-        } else if (toolName === 'gswitch_add_account') {
+        } else if (toolName === 'gadd') {
           result = await handleAddAccount();
-        } else if (toolName === 'gswitch_switch_account') {
+        } else if (toolName === 'gset') {
           result = await handleSwitchAccount(args.email);
-        } else if (toolName === 'gswitch_remove_account') {
+        } else if (toolName === 'grm') {
           result = handleRemoveAccount(args.email);
         } else {
           result = { isError: true, content: [{ type: 'text', text: `Tool ${toolName} not found` }] };
