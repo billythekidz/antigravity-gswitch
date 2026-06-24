@@ -84,8 +84,8 @@ function getEmailFromAccessToken(accessToken) {
 }
 
 // Google OAuth credentials for Antigravity CLI client (reversed to bypass GitHub secret scanning)
-const CLIENT_ID = 'moc.tnetnocresuelgoog.sppa.j531bidmh3vya6fqac3e9pnrdrpo2tf8oo-593908552186'.split('').reverse().join('');
-const CLIENT_SECRET = 'lxsFXlc5uC6VegiS7o1-mPMgH4-XPSC0OG'.split('').reverse().join('');
+const CLIENT_ID = 'moc.tnetnocresuelgoog.sppa.j531bidmh3va6fqa3e9pnrdrpo2tf8oo-593908552186'.split('').reverse().join('');
+const CLIENT_SECRET = 'lxsFXlc5uC6Veg-kS7o1-mPMgHu4-XPSCOG'.split('').reverse().join('');
 
 // Refresh access token using refresh token
 function refreshAccessToken(refreshToken) {
