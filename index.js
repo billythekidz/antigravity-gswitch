@@ -15,6 +15,7 @@ const PROFILES_DIR = path.join(CLI_DIR, 'profiles');
 const TOKEN_FILE = path.join(CLI_DIR, 'antigravity-oauth-token');
 const CREDS_FILE = path.join(CONFIG_DIR, 'oauth_creds.json');
 const ACCOUNTS_FILE = path.join(CONFIG_DIR, 'google_accounts.json');
+const REDIRECT_HOST = '127.0.0.1';
 
 // Ensure profiles directory exists
 if (!fs.existsSync(PROFILES_DIR)) {
@@ -164,7 +165,96 @@ async function resolveEmail(tokenData, credsData) {
   return null;
 }
 
+function getTokenExpiryMs(tokenData) {
+  const expiry = tokenData && tokenData.token && tokenData.token.expiry;
+  if (!expiry) return 0;
+  const ms = Date.parse(expiry);
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function getCredsExpiryMs(credsData) {
+  const expiry = credsData && credsData.expiry_date;
+  if (!expiry) return 0;
+  if (typeof expiry === 'number') return expiry;
+  const ms = Date.parse(expiry);
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function buildActiveTokenFromCreds(credsData) {
+  const expiresAt = getCredsExpiryMs(credsData);
+  return {
+    token: {
+      access_token: credsData.access_token,
+      token_type: credsData.token_type || 'Bearer',
+      refresh_token: credsData.refresh_token,
+      expiry: expiresAt ? new Date(expiresAt).toISOString() : new Date(Date.now() + 3600 * 1000).toISOString()
+    },
+    auth_method: 'consumer'
+  };
+}
+
+function updateAccountsActive(email) {
+  if (!email) return;
+  try {
+    let accounts = { active: email, old: [] };
+    if (fs.existsSync(ACCOUNTS_FILE)) {
+      accounts = JSON.parse(fs.readFileSync(ACCOUNTS_FILE, 'utf8'));
+    }
+    accounts.active = email;
+    if (!Array.isArray(accounts.old)) accounts.old = [];
+    if (!accounts.old.includes(email)) {
+      accounts.old.push(email);
+    }
+    fs.writeFileSync(ACCOUNTS_FILE, JSON.stringify(accounts, null, 2));
+  } catch (e) {
+    logDebug('Failed to sync google_accounts.json active account: ' + e.message);
+  }
+}
+
+function reconcileActiveSessionFromCreds() {
+  if (!fs.existsSync(CREDS_FILE)) return;
+
+  try {
+    const credsData = JSON.parse(fs.readFileSync(CREDS_FILE, 'utf8'));
+    if (!credsData.access_token || !credsData.refresh_token) {
+      return;
+    }
+
+    const credsExpiry = getCredsExpiryMs(credsData);
+    let tokenData = null;
+    if (fs.existsSync(TOKEN_FILE)) {
+      tokenData = JSON.parse(fs.readFileSync(TOKEN_FILE, 'utf8'));
+    }
+
+    const tokenExpiry = getTokenExpiryMs(tokenData);
+    if (tokenData && tokenExpiry && credsExpiry && tokenExpiry >= credsExpiry) {
+      return;
+    }
+
+    const activeToken = buildActiveTokenFromCreds(credsData);
+    const email = getEmailFromIdToken(credsData.id_token);
+    fs.writeFileSync(TOKEN_FILE, JSON.stringify(activeToken, null, 2));
+
+    if (email) {
+      const profileDir = path.join(PROFILES_DIR, email);
+      if (!fs.existsSync(profileDir)) {
+        fs.mkdirSync(profileDir, { recursive: true });
+      }
+      fs.writeFileSync(path.join(profileDir, 'antigravity-oauth-token'), JSON.stringify(activeToken, null, 2));
+      fs.writeFileSync(path.join(profileDir, 'oauth_creds.json'), JSON.stringify(credsData, null, 2));
+      updateAccountsActive(email);
+      logDebug(`Reconciled active session from oauth_creds.json for ${email}`);
+    } else {
+      logDebug('Reconciled active token from oauth_creds.json without email metadata');
+    }
+  } catch (e) {
+    logDebug('Failed to reconcile active session from oauth_creds.json: ' + e.message);
+  }
+}
+
 async function autoSaveCurrentSession() {
+  reconcileActiveSessionFromCreds();
+
   if (fs.existsSync(TOKEN_FILE)) {
     try {
       const activeToken = JSON.parse(fs.readFileSync(TOKEN_FILE, 'utf8'));
@@ -188,6 +278,8 @@ async function autoSaveCurrentSession() {
 }
 
 async function handleListAccounts() {
+  reconcileActiveSessionFromCreds();
+
   logDebug('Listing accounts...');
   // Find current active email
   let activeEmail = null;
@@ -246,6 +338,15 @@ function openBrowser(url) {
   }
 }
 
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function exchangeCodeForToken(code, port) {
   return new Promise((resolve, reject) => {
     const params = {
@@ -253,7 +354,7 @@ function exchangeCodeForToken(code, port) {
       client_secret: CLIENT_SECRET,
       code: code,
       grant_type: 'authorization_code',
-      redirect_uri: `http://localhost:${port}`
+      redirect_uri: `http://${REDIRECT_HOST}:${port}`
     };
     const postData = new URLSearchParams(params).toString();
 
@@ -293,6 +394,9 @@ async function exchangeCodeAndSave(code, port) {
   logDebug('Exchanging authorization code...');
   const tokenData = await exchangeCodeForToken(code, port);
   logDebug('Code exchanged successfully.');
+  if (!tokenData.refresh_token) {
+    throw new Error('Google did not return a refresh token. Please retry and approve the requested consent.');
+  }
   
   const expiresIn = tokenData.expires_in || 3600;
   const activeToken = {
@@ -379,26 +483,28 @@ async function runOAuthDaemon(resultFile) {
       return;
     }
 
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-    res.end(`
-      <html><body style="font-family:sans-serif;text-align:center;padding:60px">
-        <h1 style="color:#1a73e8">&#10003; Signed in successfully!</h1>
-        <p>You can close this tab and return to the terminal.</p>
-      </body></html>
-    `);
-
     const port = server.address().port;
     clearTimeout(timeoutId);
-    server.close();
 
     try {
       await exchangeCodeAndSave(code, port);
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(`
+        <html><body style="font-family:sans-serif;text-align:center;padding:60px">
+          <h1 style="color:#1a73e8">&#10003; Signed in successfully!</h1>
+          <p>Your token has been saved. You can close this tab and return to the terminal.</p>
+        </body></html>
+      `);
       fs.writeFileSync(resultFile, JSON.stringify({ ok: true }));
       process.exit(0);
     } catch (err) {
       logDebug('OAuth daemon - exchangeCodeAndSave failed: ' + err.message);
+      res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(`<h1>Authentication failed</h1><p>${escapeHtml(err.message)}</p>`);
       fs.writeFileSync(resultFile, JSON.stringify({ error: err.message }));
       process.exit(1);
+    } finally {
+      server.close();
     }
   });
 
@@ -407,7 +513,7 @@ async function runOAuthDaemon(resultFile) {
     process.exit(1);
   });
 
-  server.listen(0, '127.0.0.1', () => {
+  server.listen(0, REDIRECT_HOST, () => {
     const port = server.address().port;
     // Write port so parent can build the auth URL
     fs.writeFileSync(resultFile, JSON.stringify({ port }));
@@ -458,10 +564,11 @@ async function handleAddAccount() {
 
   const authUrl = 'https://accounts.google.com/o/oauth2/v2/auth?' + new URLSearchParams({
     client_id: CLIENT_ID,
-    redirect_uri: `http://localhost:${port}`,
+    redirect_uri: `http://${REDIRECT_HOST}:${port}`,
     response_type: 'code',
     scope: scopes,
-    prompt: 'select_account'
+    access_type: 'offline',
+    prompt: 'select_account consent'
   }).toString();
 
   openBrowser(authUrl);
@@ -608,6 +715,8 @@ async function handleCommandLineArgs() {
     process.exit(1);
   }
 }
+
+reconcileActiveSessionFromCreds();
 
 if (process.argv[2] === '--oauth-daemon') {
   // Detached daemon mode: handle OAuth callback independently of MCP
