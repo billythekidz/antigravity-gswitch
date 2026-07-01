@@ -816,7 +816,6 @@ async function handleCommandLineArgs() {
 
 async function main() {
   reconcileActiveSessionFromCreds();
-  await syncCurrentTokenToKeyring();
 
   if (process.argv[2] === '--oauth-daemon') {
     // Detached daemon mode: handle OAuth callback independently of MCP
