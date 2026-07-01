@@ -181,6 +181,10 @@ function getCredsExpiryMs(credsData) {
   return Number.isFinite(ms) ? ms : 0;
 }
 
+function isExpiredOrStale(expiryMs) {
+  return !expiryMs || expiryMs <= Date.now() + 60 * 1000;
+}
+
 function buildActiveTokenFromCreds(credsData) {
   const expiresAt = getCredsExpiryMs(credsData);
   return {
@@ -192,6 +196,34 @@ function buildActiveTokenFromCreds(credsData) {
     },
     auth_method: 'consumer'
   };
+}
+
+async function refreshStoredTokenIfNeeded(tokenData, credsData) {
+  if (!tokenData || !tokenData.token || !tokenData.token.refresh_token) {
+    return { tokenData, credsData, refreshed: false };
+  }
+
+  if (!isExpiredOrStale(getTokenExpiryMs(tokenData))) {
+    return { tokenData, credsData, refreshed: false };
+  }
+
+  const refreshed = await refreshAccessToken(tokenData.token.refresh_token);
+  const expiresIn = refreshed.expires_in || 3600;
+  const expiryMs = Date.now() + expiresIn * 1000;
+
+  tokenData.token.access_token = refreshed.access_token;
+  tokenData.token.token_type = refreshed.token_type || tokenData.token.token_type || 'Bearer';
+  tokenData.token.expiry = new Date(expiryMs).toISOString();
+
+  if (credsData) {
+    credsData.access_token = refreshed.access_token;
+    credsData.token_type = refreshed.token_type || credsData.token_type || 'Bearer';
+    credsData.expiry_date = expiryMs;
+    if (refreshed.scope) credsData.scope = refreshed.scope;
+    if (refreshed.id_token) credsData.id_token = refreshed.id_token;
+  }
+
+  return { tokenData, credsData, refreshed: true };
 }
 
 function syncTokenToKeyring(tokenData) {
@@ -212,15 +244,24 @@ function syncTokenToKeyring(tokenData) {
     ], { stdio: 'ignore' });
     logDebug('Synced active token to macOS keychain item gemini/antigravity');
   } catch (e) {
-    logDebug('Failed to sync active token to macOS keychain: ' + e.message);
+    logDebug(`Failed to sync active token to macOS keychain: exit status ${e.status || 'unknown'}`);
   }
 }
 
-function syncCurrentTokenToKeyring() {
+async function syncCurrentTokenToKeyring() {
   if (!fs.existsSync(TOKEN_FILE)) return;
   try {
     const tokenData = JSON.parse(fs.readFileSync(TOKEN_FILE, 'utf8'));
-    syncTokenToKeyring(tokenData);
+    const credsData = fs.existsSync(CREDS_FILE) ? JSON.parse(fs.readFileSync(CREDS_FILE, 'utf8')) : null;
+    const refreshed = await refreshStoredTokenIfNeeded(tokenData, credsData);
+    if (refreshed.refreshed) {
+      fs.writeFileSync(TOKEN_FILE, JSON.stringify(refreshed.tokenData, null, 2));
+      if (refreshed.credsData) {
+        fs.writeFileSync(CREDS_FILE, JSON.stringify(refreshed.credsData, null, 2));
+      }
+      logDebug('Refreshed active token before keychain sync');
+    }
+    syncTokenToKeyring(refreshed.tokenData);
   } catch (e) {
     logDebug('Failed to read active token for keychain sync: ' + e.message);
   }
@@ -648,22 +689,37 @@ async function handleSwitchAccount(email) {
   const tokenSrc = path.join(profileDir, 'antigravity-oauth-token');
   const credsSrc = path.join(profileDir, 'oauth_creds.json');
 
-  if (fs.existsSync(tokenSrc)) {
-    fs.copyFileSync(tokenSrc, TOKEN_FILE);
-    try {
-      syncTokenToKeyring(JSON.parse(fs.readFileSync(tokenSrc, 'utf8')));
-    } catch (e) {
-      logDebug('Failed to sync switched profile token to keychain: ' + e.message);
-    }
-  } else {
+  if (!fs.existsSync(tokenSrc)) {
     return { isError: true, content: [{ type: 'text', text: `Profile files missing for ${email}` }] };
   }
 
-  if (fs.existsSync(credsSrc)) {
-    fs.copyFileSync(credsSrc, CREDS_FILE);
-  } else if (fs.existsSync(CREDS_FILE)) {
-    // If no creds in profile but global exists, delete global to avoid mismatched user
-    fs.unlinkSync(CREDS_FILE);
+  try {
+    let profileToken = JSON.parse(fs.readFileSync(tokenSrc, 'utf8'));
+    let profileCreds = fs.existsSync(credsSrc) ? JSON.parse(fs.readFileSync(credsSrc, 'utf8')) : null;
+    const refreshed = await refreshStoredTokenIfNeeded(profileToken, profileCreds);
+    profileToken = refreshed.tokenData;
+    profileCreds = refreshed.credsData;
+
+    if (refreshed.refreshed) {
+      fs.writeFileSync(tokenSrc, JSON.stringify(profileToken, null, 2));
+      if (profileCreds) {
+        fs.writeFileSync(credsSrc, JSON.stringify(profileCreds, null, 2));
+      }
+      logDebug(`Refreshed stored token before switching to ${email}`);
+    }
+
+    fs.writeFileSync(TOKEN_FILE, JSON.stringify(profileToken, null, 2));
+    syncTokenToKeyring(profileToken);
+
+    if (profileCreds) {
+      fs.writeFileSync(CREDS_FILE, JSON.stringify(profileCreds, null, 2));
+    } else if (fs.existsSync(CREDS_FILE)) {
+      // If no creds in profile but global exists, delete global to avoid mismatched user
+      fs.unlinkSync(CREDS_FILE);
+    }
+  } catch (e) {
+    logDebug('Failed to restore profile files: ' + e.message);
+    return { isError: true, content: [{ type: 'text', text: `Failed to restore profile files for ${email}: ${e.message}` }] };
   }
 
   // 3. Update google_accounts.json
@@ -758,48 +814,56 @@ async function handleCommandLineArgs() {
   }
 }
 
-reconcileActiveSessionFromCreds();
-syncCurrentTokenToKeyring();
+async function main() {
+  reconcileActiveSessionFromCreds();
+  await syncCurrentTokenToKeyring();
 
-if (process.argv[2] === '--oauth-daemon') {
-  // Detached daemon mode: handle OAuth callback independently of MCP
-  const resultFile = process.argv[3];
-  if (!resultFile) { console.error('Missing result file argument'); process.exit(1); }
-  runOAuthDaemon(resultFile).catch((err) => {
-    try { fs.writeFileSync(resultFile, JSON.stringify({ error: err.message })); } catch (_) {}
-    process.exit(1);
-  });
-} else if (process.argv.length > 2) {
-  isCLI = true;
-  handleCommandLineArgs();
-} else {
-  // JSON-RPC stdio protocol loop
-  let buffer = '';
-  process.stdin.setEncoding('utf8');
-  process.stdin.on('data', (chunk) => {
-    buffer += chunk;
-    let lines = buffer.split('\n');
-    buffer = lines.pop(); // Keep incomplete line
-    for (let line of lines) {
-      if (line.trim()) {
-        handleMessage(line.trim());
+  if (process.argv[2] === '--oauth-daemon') {
+    // Detached daemon mode: handle OAuth callback independently of MCP
+    const resultFile = process.argv[3];
+    if (!resultFile) { console.error('Missing result file argument'); process.exit(1); }
+    runOAuthDaemon(resultFile).catch((err) => {
+      try { fs.writeFileSync(resultFile, JSON.stringify({ error: err.message })); } catch (_) {}
+      process.exit(1);
+    });
+  } else if (process.argv.length > 2) {
+    isCLI = true;
+    handleCommandLineArgs();
+  } else {
+    // JSON-RPC stdio protocol loop
+    let buffer = '';
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', (chunk) => {
+      buffer += chunk;
+      let lines = buffer.split('\n');
+      buffer = lines.pop(); // Keep incomplete line
+      for (let line of lines) {
+        if (line.trim()) {
+          handleMessage(line.trim());
+        }
       }
-    }
-  });
+    });
 
-  process.stdin.on('end', () => {
-    logDebug('stdin closed, exiting.');
-    process.exit(0);
-  });
+    process.stdin.on('end', () => {
+      logDebug('stdin closed, exiting.');
+      process.exit(0);
+    });
 
-  process.on('uncaughtException', (err) => {
-    logDebug('Uncaught exception: ' + err.message + '\n' + err.stack);
-  });
+    process.on('uncaughtException', (err) => {
+      logDebug('Uncaught exception: ' + err.message + '\n' + err.stack);
+    });
 
-  process.on('unhandledRejection', (reason) => {
-    logDebug('Unhandled rejection: ' + reason);
-  });
+    process.on('unhandledRejection', (reason) => {
+      logDebug('Unhandled rejection: ' + reason);
+    });
+  }
 }
+
+main().catch((err) => {
+  logDebug('Fatal startup error: ' + err.message + '\n' + err.stack);
+  console.error('Fatal startup error: ' + err.message);
+  process.exit(1);
+});
 
 const TOOLS_LIST = [
   {
