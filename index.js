@@ -181,6 +181,10 @@ function getCredsExpiryMs(credsData) {
   return Number.isFinite(ms) ? ms : 0;
 }
 
+function getEmailFromCreds(credsData) {
+  return credsData && credsData.id_token ? getEmailFromIdToken(credsData.id_token) : null;
+}
+
 function isExpiredOrStale(expiryMs) {
   return !expiryMs || expiryMs <= Date.now() + 60 * 1000;
 }
@@ -294,6 +298,15 @@ function reconcileActiveSessionFromCreds() {
       return;
     }
 
+    const credsEmail = getEmailFromCreds(credsData);
+    if (credsEmail && fs.existsSync(ACCOUNTS_FILE)) {
+      const accounts = JSON.parse(fs.readFileSync(ACCOUNTS_FILE, 'utf8'));
+      if (accounts.active && accounts.active !== credsEmail) {
+        logDebug(`Skipping oauth_creds.json reconcile for ${credsEmail}; active account is ${accounts.active}`);
+        return;
+      }
+    }
+
     const credsExpiry = getCredsExpiryMs(credsData);
     let tokenData = null;
     if (fs.existsSync(TOKEN_FILE)) {
@@ -306,7 +319,7 @@ function reconcileActiveSessionFromCreds() {
     }
 
     const activeToken = buildActiveTokenFromCreds(credsData);
-    const email = getEmailFromIdToken(credsData.id_token);
+    const email = credsEmail;
     fs.writeFileSync(TOKEN_FILE, JSON.stringify(activeToken, null, 2));
     syncTokenToKeyring(activeToken);
 
@@ -332,10 +345,14 @@ async function autoSaveCurrentSession() {
 
   if (fs.existsSync(TOKEN_FILE)) {
     try {
-      const activeToken = JSON.parse(fs.readFileSync(TOKEN_FILE, 'utf8'));
+      let activeToken = JSON.parse(fs.readFileSync(TOKEN_FILE, 'utf8'));
       const activeCreds = fs.existsSync(CREDS_FILE) ? JSON.parse(fs.readFileSync(CREDS_FILE, 'utf8')) : null;
-      const activeEmail = await resolveEmail(activeToken, activeCreds);
+      const credsEmail = getEmailFromCreds(activeCreds);
+      const activeEmail = credsEmail || await resolveEmail(activeToken, activeCreds);
       if (activeEmail) {
+        if (credsEmail && activeCreds.access_token && activeCreds.refresh_token) {
+          activeToken = buildActiveTokenFromCreds(activeCreds);
+        }
         const activeProfileDir = path.join(PROFILES_DIR, activeEmail);
         if (!fs.existsSync(activeProfileDir)) {
           fs.mkdirSync(activeProfileDir, { recursive: true });
@@ -694,8 +711,12 @@ async function handleSwitchAccount(email) {
   }
 
   try {
-    let profileToken = JSON.parse(fs.readFileSync(tokenSrc, 'utf8'));
     let profileCreds = fs.existsSync(credsSrc) ? JSON.parse(fs.readFileSync(credsSrc, 'utf8')) : null;
+    let profileToken = JSON.parse(fs.readFileSync(tokenSrc, 'utf8'));
+    const profileCredsEmail = getEmailFromCreds(profileCreds);
+    if (profileCredsEmail === email && profileCreds.access_token && profileCreds.refresh_token) {
+      profileToken = buildActiveTokenFromCreds(profileCreds);
+    }
     const refreshed = await refreshStoredTokenIfNeeded(profileToken, profileCreds);
     profileToken = refreshed.tokenData;
     profileCreds = refreshed.credsData;
