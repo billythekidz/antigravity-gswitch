@@ -5,7 +5,7 @@ const path = require('path');
 const os = require('os');
 const https = require('https');
 const http = require('http');
-const { exec, spawn } = require('child_process');
+const { exec, execFileSync, spawn } = require('child_process');
 
 let isCLI = false;
 
@@ -194,6 +194,38 @@ function buildActiveTokenFromCreds(credsData) {
   };
 }
 
+function syncTokenToKeyring(tokenData) {
+  if (os.platform() !== 'darwin' || !tokenData || !tokenData.token) return;
+  if (!tokenData.token.access_token || !tokenData.token.refresh_token) return;
+
+  try {
+    const encoded = Buffer.from(JSON.stringify(tokenData), 'utf8').toString('base64');
+    execFileSync('security', [
+      'add-generic-password',
+      '-U',
+      '-s',
+      'gemini',
+      '-a',
+      'antigravity',
+      '-w',
+      `go-keyring-base64:${encoded}`
+    ], { stdio: 'ignore' });
+    logDebug('Synced active token to macOS keychain item gemini/antigravity');
+  } catch (e) {
+    logDebug('Failed to sync active token to macOS keychain: ' + e.message);
+  }
+}
+
+function syncCurrentTokenToKeyring() {
+  if (!fs.existsSync(TOKEN_FILE)) return;
+  try {
+    const tokenData = JSON.parse(fs.readFileSync(TOKEN_FILE, 'utf8'));
+    syncTokenToKeyring(tokenData);
+  } catch (e) {
+    logDebug('Failed to read active token for keychain sync: ' + e.message);
+  }
+}
+
 function updateAccountsActive(email) {
   if (!email) return;
   try {
@@ -235,6 +267,7 @@ function reconcileActiveSessionFromCreds() {
     const activeToken = buildActiveTokenFromCreds(credsData);
     const email = getEmailFromIdToken(credsData.id_token);
     fs.writeFileSync(TOKEN_FILE, JSON.stringify(activeToken, null, 2));
+    syncTokenToKeyring(activeToken);
 
     if (email) {
       const profileDir = path.join(PROFILES_DIR, email);
@@ -434,6 +467,7 @@ async function exchangeCodeAndSave(code, port) {
 
   fs.writeFileSync(TOKEN_FILE, JSON.stringify(activeToken, null, 2));
   fs.writeFileSync(CREDS_FILE, JSON.stringify(activeCreds, null, 2));
+  syncTokenToKeyring(activeToken);
 
   if (fs.existsSync(ACCOUNTS_FILE)) {
     try {
@@ -616,6 +650,11 @@ async function handleSwitchAccount(email) {
 
   if (fs.existsSync(tokenSrc)) {
     fs.copyFileSync(tokenSrc, TOKEN_FILE);
+    try {
+      syncTokenToKeyring(JSON.parse(fs.readFileSync(tokenSrc, 'utf8')));
+    } catch (e) {
+      logDebug('Failed to sync switched profile token to keychain: ' + e.message);
+    }
   } else {
     return { isError: true, content: [{ type: 'text', text: `Profile files missing for ${email}` }] };
   }
@@ -720,6 +759,7 @@ async function handleCommandLineArgs() {
 }
 
 reconcileActiveSessionFromCreds();
+syncCurrentTokenToKeyring();
 
 if (process.argv[2] === '--oauth-daemon') {
   // Detached daemon mode: handle OAuth callback independently of MCP
